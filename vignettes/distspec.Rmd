@@ -1,0 +1,156 @@
+---
+title: "Getting started with distspec"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting started with distspec}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+set.seed(1)
+```
+
+```{r setup}
+library(distspec)
+library(ggplot2)
+```
+
+In distspec, a probability distribution is a single object: a `<dist_spec>`. It
+can hold fixed parameters or uncertain ones, and the same functions work on
+either.
+
+## Quick start
+
+Add two delays with `+`, discretise to a probability mass function, and plot:
+
+```{r quickstart}
+delays <- Gamma(mean = 4, sd = 2, max = 20) +
+  LogNormal(meanlog = 1, sdlog = 0.5, max = 20)
+get_pmf(collapse(discretise(delays)))
+```
+
+```{r quickstart-plot, fig.width = 7, fig.height = 4, fig.alt = "PMF and CDF of a gamma and a lognormal delay."}
+plot(delays)
+```
+
+## Defining a distribution
+
+Each distribution has its own constructor. Give it the natural parameters, or a
+mean and standard deviation that distspec converts for you:
+
+```{r define}
+Gamma(shape = 2, rate = 0.5)
+Gamma(mean = 4, sd = 2)
+LogNormal(meanlog = 1, sdlog = 0.5)
+```
+
+A finite maximum (and, for parametric distributions, a `cdf_cutoff`) truncates
+the support:
+
+```{r bound}
+Gamma(mean = 4, sd = 2, max = 20)
+```
+
+## Uncertain parameters
+
+Any parameter can be a number or, to express uncertainty about its value,
+another `<dist_spec>`. Uncertain parameters must be given as the natural
+parameters:
+
+```{r uncertain}
+uncertain <- Gamma(shape = Normal(2, 0.5), rate = Normal(0.5, 0.1))
+uncertain
+
+# the mean of an uncertain distribution is unknown unless we ignore uncertainty
+mean(uncertain)
+mean(uncertain, ignore_uncertainty = TRUE)
+```
+
+`fix_parameters()` resolves an uncertain distribution to a fixed one, taking
+either the mean of each prior or a sample from it:
+
+```{r fix}
+fix_parameters(uncertain, strategy = "mean")
+```
+
+## Discretising
+
+`discretise()` turns a continuous distribution into a nonparametric probability
+mass function over `0, 1, 2, ...`:
+
+```{r discretise}
+pmf <- discretise(Gamma(mean = 4, sd = 2, max = 20))
+get_pmf(pmf)
+```
+
+## Combining distributions
+
+Adding two distributions convolves them into a composite `<dist_spec>`. To turn
+that composite into a single probability mass function, discretise each
+component, `collapse()` them into one nonparametric distribution, and read off
+the PMF vector with `get_pmf()`:
+
+```{r combine}
+combined <- Gamma(mean = 4, sd = 2, max = 20) +
+  LogNormal(meanlog = 1, sdlog = 0.5, max = 20)
+get_pmf(collapse(discretise(combined)))
+```
+
+This `get_pmf(collapse(discretise(d1 + d2)))` pipeline is the usual way to
+combine two delays into a single PMF. The result is itself a `<dist_spec>`, so
+the same summaries work on it:
+
+```{r combine-mean}
+mean(collapse(discretise(combined)))
+```
+
+## Plotting
+
+`plot()` draws the probability mass function of a distribution, and its
+cumulative distribution function when `cumulative = TRUE`. Each component of a
+composite is shown in its own facet:
+
+```{r plot, fig.width = 7, fig.height = 4, fig.alt = "PMF and CDF of a discretised gamma distribution."}
+plot(discretise(Gamma(mean = 4, sd = 2, max = 20)))
+```
+
+An uncertain distribution is drawn as a sample of PMFs from its priors, one line
+per draw. Here `cumulative = FALSE` shows the mass functions on their own:
+
+```{r plot-uncertain, fig.width = 7, fig.height = 4, fig.alt = "Sampled PMFs of an uncertain gamma distribution."}
+plot(
+  Gamma(shape = Normal(3, 0.5), rate = Normal(2, 0.5), max = 20),
+  cumulative = FALSE
+)
+```
+
+## Sampling
+
+`sample_dist()` draws random samples from a distribution with fixed parameters:
+
+```{r sample}
+sample_dist(Gamma(mean = 4, sd = 2, max = 20), n = 5)
+```
+
+## Uncertain nonparametric distributions
+
+Instead of a fixed PMF, a nonparametric distribution can carry a `Dirichlet()`
+prior over its bins, leaving its PMF uncertain:
+
+```{r uncertain-nonparametric}
+est <- NonParametric(pmf = Dirichlet(c(0, 2, 4, 3)))
+est
+```
+
+It then has no concrete PMF until you resolve it with `fix_parameters()`.
+`has_uncertainty()` reports whether a distribution carries a prior:
+
+```{r has-uncertainty}
+has_uncertainty(est)
+has_uncertainty(Gamma(shape = 2, rate = 0.5))
+```
