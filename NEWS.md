@@ -1,3 +1,33 @@
+# distspec 0.2.0
+
+## New features
+
+- Added `as_dist_spec()`, a generic for converting other representations of a probability distribution to a `<dist_spec>`: a `<dist_spec>` is returned unchanged, a numeric PMF vector becomes a `NonParametric()` and a single number a `Fixed()`. Other packages can register methods for their own classes without a dependency in either direction.
+
+## Deprecations
+
+- The `cdf_cutoff` argument of `bound_dist()` and `new_dist_spec()` (and of
+  the distribution constructors, which pass it on) has been renamed to
+  `cdf_max`: the CDF level up to which the distribution is kept, mirroring
+  `max` on the probability axis (`max = 10` truncates at the value 10,
+  `cdf_max = 0.999` at the 99.9% quantile). The semantics are unchanged.
+  Supplying `cdf_cutoff` warns and interprets the value as `cdf_max`; a value
+  in the historical EpiNow2 convention (the tail probability to drop) is
+  caught by the existing guard against values below `0.5`, which points to the
+  `1 - x` conversion. The internal attribute carrying the bound is renamed
+  accordingly.
+
+## Bug fixes
+
+- `Fixed()` now forwards its `...` to `bound_dist()` as documented; previously limits such as `Fixed(3, max = 5)` were silently dropped.
+- A non-finite `Fixed()` value (e.g. `NA` or `Inf`) is now rejected with an informative error; previously it raised a bare condition error from the internal bound check.
+- Bounding a fixed distribution below its value (e.g. `Fixed(6, max = 5)`) is now rejected, and discretising a partially truncated fixed distribution renormalises the PMF to sum to one; previously both silently produced an invalid PMF.
+
+## Documentation
+
+- Added a hex sticker logo, shown in the README and on the pkgdown site.
+- The `NonParametric()` help page now documents that a distribution constructed with a `Dirichlet()` prior has no concrete PMF until `fix_parameters()` resolves it, and how `get_pmf()` and `has_uncertainty()` behave in the meantime. `has_uncertainty()` now appears in the reference index to match.
+
 # distspec 0.1.0
 
 distspec 0.1.0 splits the `<dist_spec>` interface out of EpiNow2. The entries
