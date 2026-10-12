@@ -40,6 +40,9 @@ lower_bounds.gamma <- function(x) {
 dist_cdf.gamma <- function(x) pgamma
 
 #' @exportS3Method
+dist_quantile.gamma <- function(x) qgamma
+
+#' @exportS3Method
 to_natural.gamma <- function(x, ux) {
   if (all(c("mean", "sd") %in% names(ux))) {
     shape <- ux$mean^2 / ux$sd^2
@@ -60,8 +63,8 @@ mean.gamma <- function(x, ...) x$parameters$shape / x$parameters$rate
 #' @export
 sd.gamma <- function(x, ...) sqrt(x$parameters$shape / x$parameters$rate^2)
 
-#' @importFrom stats rgamma
+#' @importFrom stats rgamma qgamma
 #' @exportS3Method
 sample_dist.gamma <- function(x, n, ...) {
-  rgamma(n, shape = x$parameters$shape, rate = x$parameters$rate)
+  sample_bounded(x, n, rng = rgamma, cdf = pgamma, quantile = qgamma)
 }

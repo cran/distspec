@@ -1,7 +1,7 @@
 Type: Package
 Package: distspec
 Title: Probability Distributions with Certain or Uncertain Parameters
-Version: 0.2.0
+Version: 0.3.0
 Authors@R: 
     c(person(given = "Sebastian",
              family = "Funk",
@@ -35,11 +35,11 @@ Encoding: UTF-8
 Language: en-GB
 RoxygenNote: 7.3.3
 NeedsCompilation: no
-Packaged: 2026-09-01 10:49:48 UTC; sebfunk
+Packaged: 2026-10-12 19:11:31 UTC; sebfunk
 Author: Sebastian Funk [aut, cre] (ORCID:
     <https://orcid.org/0000-0002-2842-3406>),
   James M. Azam [aut] (ORCID: <https://orcid.org/0000-0001-5782-7330>),
   Sam Abbott [aut] (ORCID: <https://orcid.org/0000-0001-8057-8037>)
 Maintainer: Sebastian Funk <sebastian.funk@lshtm.ac.uk>
 Repository: CRAN
-Date/Publication: 2026-09-01 11:40:09 UTC
+Date/Publication: 2026-10-12 20:00:02 UTC

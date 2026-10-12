@@ -310,10 +310,15 @@ sd.default <- function(x, ...) {
 #' Sample from a distribution
 #'
 #' @description
-#' Draws random samples from a `<dist_spec>` whose parameters are fixed numbers,
-#' using the base-R random-generation function for its family (e.g. [rgamma()]
-#' for a gamma distribution). A discretised distribution is sampled on its
-#' integer support.
+#' Draws random samples from a `<dist_spec>` whose parameters are fixed
+#' numbers. An unbounded distribution uses the base-R random-generation
+#' function for its family (e.g. [rgamma()] for a gamma distribution). A
+#' discretised distribution is sampled on its integer support.
+#'
+#' A `max`/`cdf_max` set with [bound_dist()] on a parametric distribution is
+#' respected: samples are drawn from the truncated distribution by inverse
+#' CDF rather than by discarding draws beyond the bound, so the cost does not
+#' depend on how much of the mass the bound cuts off.
 #'
 #' Only distributions with fixed parameters can be sampled. If any parameter is
 #' itself a distribution (a prior), there is no single distribution to sample
@@ -322,7 +327,11 @@ sd.default <- function(x, ...) {
 #' A composite (multi-component) distribution is sampled per component, in
 #' keeping with `mean()`/`sd()`, which also return one value per component. Use
 #' `rowSums()` on the result to obtain samples of the combined (convolved)
-#' distribution.
+#' distribution. A `max`/`cdf_max` set on the composite itself (with
+#' [bound_dist()] on the sum) refers to that combined distribution, which has
+#' no closed-form distribution to draw from, so sampling such a composite
+#' raises an error. Bound the components individually to sample them under a
+#' bound.
 #'
 #' @param x A `<dist_spec>`.
 #' @param n The number of samples to draw.
@@ -379,11 +388,346 @@ sample_dist.uncertain_dist_spec <- function(x, n, ...) {
 }
 
 #' @rdname sample_dist
+#' @importFrom rlang `%||%`
+#' @importFrom cli cli_abort
 #' @export
 sample_dist.multi_dist_spec <- function(x, n, ...) {
   ## An uncertain component errors via its own
-  ## `sample_dist.uncertain_dist_spec()` method.
-  vapply(x, sample_dist, numeric(n), n = n)
+  ## `sample_dist.uncertain_dist_spec()` method. Each component carries its
+  ## own `max`/`cdf_max`, respected by its own `sample_dist()` method.
+  ## A bound on the composite itself (set with `bound_dist()` on the sum, e.g.
+  ## `bound_dist(dist1 + dist2, max = 20)`) constrains the convolved
+  ## (row-summed) distribution, which has no closed-form CDF to sample from.
+  max_value <- attr(x, "max") %||% Inf
+  cdf_max <- attr(x, "cdf_max") %||% 1
+  if (!is.infinite(max_value) || cdf_max < 1) {
+    cli_abort(
+      c(
+        "!" = "Can't sample from a composite distribution with a {.arg max} or
+        {.arg cdf_max} bound of its own.",
+        "i" = "The bound refers to the sum of the components, which has no
+        closed-form distribution to sample from.",
+        "i" = "Bound the components individually to sample them under a bound."
+      )
+    )
+  }
+  draw_components(x, n)
+}
+
+#' Draw an `n` by `k` matrix of per-component samples
+#'
+#' @description
+#' A thin wrapper around `vapply()` that always returns a matrix, even when
+#' `n = 1` (where `vapply()` would otherwise simplify to a plain vector).
+#' @param x A `<multi_dist_spec>`.
+#' @param n The number of samples to draw.
+#' @return An `n` by `length(x)` matrix.
+#' @keywords internal
+draw_components <- function(x, n) {
+  samples <- vapply(x, sample_dist, numeric(n), n = n)
+  if (n == 1) matrix(samples, nrow = 1) else samples
+}
+
+#' Draw samples respecting a `max`/`cdf_max` bound
+#'
+#' @description
+#' Used by each parametric distribution's `sample_dist()` method. If `x` is
+#' unconstrained this just calls the unbounded generator `rng`. Otherwise it
+#' draws exactly from the bounded distribution via inverse-CDF sampling:
+#' `upper` is the smaller of `max` and the `cdf_max` quantile, `u` is drawn
+#' uniformly on `(0, F(upper))`, and the quantile at `u` is returned. This
+#' takes a single pass, unlike a rejection loop (resampling from the unbounded
+#' distribution until a draw falls within the bound), which can hang when the
+#' bound cuts off nearly all of the mass (e.g. `Normal(mean = 100, sd = 1,
+#' max = 90)`, whose tail beyond 90 has probability of order 1e-24).
+#'
+#' The computation runs on the log scale throughout, so a bound far enough
+#' into the lower tail for `F(upper)` to underflow to zero in double precision
+#' (e.g. `Normal(mean = 100, sd = 1, max = 20)`) still samples correctly.
+#'
+#' @param x A single (non-composite) `<dist_spec>`.
+#' @param n The number of samples to draw.
+#' @param rng The base-R random-generation function for the family (e.g.
+#'   [rgamma()]).
+#' @param cdf The base-R CDF function for the family (e.g. [pgamma()]).
+#' @param quantile The base-R quantile function for the family (e.g.
+#'   [qgamma()]).
+#' @return A numeric vector of `n` samples.
+#' @importFrom stats runif
+#' @importFrom rlang `%||%`
+#' @keywords internal
+sample_bounded <- function(x, n, rng, cdf, quantile) {
+  params <- get_parameters(x)
+  if (!is_constrained(x)) {
+    return(do.call(rng, c(list(n), params)))
+  }
+  ## everything is done on the log scale: for a bound deep in the lower tail
+  ## `F(max)` underflows to 0 in double precision (e.g. `pnorm(20, 100, 1)`),
+  ## which would collapse every draw onto the support boundary
+  log_upper <- log(attr(x, "cdf_max") %||% 1)
+  max_value <- attr(x, "max") %||% Inf
+  if (is.finite(max_value)) {
+    log_upper <- min(
+      log_upper,
+      do.call(cdf, c(list(max_value), params, list(log.p = TRUE)))
+    )
+  }
+  ## u is uniform on (0, F(upper)); log(u) = log F(upper) + log(uniform)
+  log_u <- log_upper + log(runif(n))
+  do.call(quantile, c(list(log_u), params, list(log.p = TRUE)))
+}
+
+#' Log of `F(upper)` for a `max`/`cdf_max` bound
+#'
+#' @description
+#' Shared by [quantile_bounded()] and [cdf_bounded()]: `upper` is the smaller
+#' of `max` and the `cdf_max` quantile. This returns `log F(upper)`, computed
+#' on the log scale throughout, so a bound deep in the tail (where
+#' `F(upper)` underflows to zero in double precision) still gives the
+#' correct value instead of collapsing onto the support boundary.
+#'
+#' @param x A single (non-composite) `<dist_spec>` with fixed parameters.
+#' @param params The result of `get_parameters(x)`.
+#' @param cdf The family's CDF function, as returned by `dist_cdf(x)`.
+#' @return A single numeric value, `log F(upper)`.
+#' @importFrom rlang `%||%`
+#' @keywords internal
+log_upper_bound <- function(x, params, cdf) {
+  log_upper <- log(attr(x, "cdf_max") %||% 1)
+  max_value <- attr(x, "max") %||% Inf
+  if (is.finite(max_value)) {
+    log_upper <- min(
+      log_upper,
+      do.call(cdf, c(list(max_value), params, list(log.p = TRUE)))
+    )
+  }
+  log_upper
+}
+
+#' Quantile function respecting a `max`/`cdf_max` bound
+#'
+#' @description
+#' Used by [quantile.dist_spec()]. If `x` is unconstrained this just calls the
+#' unbounded quantile function `dist_quantile(x)`. Otherwise it computes the
+#' quantile of the truncated distribution exactly: `F_trunc^{-1}(p) =
+#' F^{-1}(p * F(upper))`, where `upper` is the smaller of `max` and the
+#' `cdf_max` quantile (see [log_upper_bound()]). This mirrors
+#' [sample_bounded()], but for a requested probability `p` instead of a
+#' uniform draw.
+#'
+#' @param x A single (non-composite) `<dist_spec>` with fixed parameters.
+#' @param probs Numeric vector of probabilities in `[0, 1]`.
+#' @return A numeric vector of quantiles, the same length as `probs`.
+#' @keywords internal
+quantile_bounded <- function(x, probs) {
+  params <- get_parameters(x)
+  quantile_fn <- dist_quantile(x)
+  if (!is_constrained(x)) {
+    return(do.call(quantile_fn, c(list(probs), params)))
+  }
+  cdf <- dist_cdf(x)
+  log_p <- log_upper_bound(x, params, cdf) + log(probs)
+  do.call(quantile_fn, c(list(log_p), params, list(log.p = TRUE)))
+}
+
+#' CDF respecting a `max`/`cdf_max` bound
+#'
+#' @description
+#' Used by [cdf.dist_spec()]. If `x` is unconstrained this just calls the
+#' unbounded CDF `dist_cdf(x)`. Otherwise it computes the CDF of the truncated
+#' distribution: `F_trunc(q) = F(q) / F(upper)`, capped at `1` for `q` at or
+#' beyond `upper` (see [log_upper_bound()]).
+#'
+#' @param x A single (non-composite) `<dist_spec>` with fixed parameters.
+#' @param q Numeric vector of values to evaluate the CDF at.
+#' @return A numeric vector, the same length as `q`.
+#' @keywords internal
+cdf_bounded <- function(x, q) {
+  params <- get_parameters(x)
+  cdf <- dist_cdf(x)
+  if (!is_constrained(x)) {
+    return(do.call(cdf, c(list(q), params)))
+  }
+  log_upper <- log_upper_bound(x, params, cdf)
+  log_fq <- do.call(cdf, c(list(q), params, list(log.p = TRUE)))
+  pmin(exp(log_fq - log_upper), 1)
+}
+
+# Validates the `probs` argument shared by `quantile.dist_spec()` and
+# `quantile.multi_dist_spec()`.
+#' @importFrom cli cli_abort
+validate_probs <- function(probs) {
+  if (!is.numeric(probs) || anyNA(probs) || any(probs < 0 | probs > 1)) {
+    cli_abort(
+      "{.arg probs} must be numeric values in {.val [0, 1]}."
+    )
+  }
+}
+
+# Shared guard for `quantile.multi_dist_spec()` and `cdf.multi_dist_spec()`: a
+# `max`/`cdf_max` bound on the composite itself constrains the sum of its
+# components, which has no closed-form distribution (the same restriction
+# `sample_dist.multi_dist_spec()` applies to sampling).
+#' @importFrom rlang `%||%`
+#' @importFrom cli cli_abort
+check_no_composite_bound <- function(x, action) {
+  max_value <- attr(x, "max") %||% Inf
+  cdf_max <- attr(x, "cdf_max") %||% 1
+  if (!is.infinite(max_value) || cdf_max < 1) {
+    cli_abort(
+      c(
+        "!" = "Can't {action} a composite distribution with a {.arg max} or
+        {.arg cdf_max} bound of its own.",
+        "i" = "The bound refers to the sum of the components, which has no
+        closed-form distribution.",
+        "i" = "Bound the components individually instead."
+      )
+    )
+  }
+}
+
+#' Returns quantiles of a delay distribution
+#'
+#' @description
+#' Computes quantiles of a `<dist_spec>` with fixed (non-uncertain)
+#' parameters, respecting any `max`/`cdf_max` bound set with [bound_dist()]:
+#' the quantiles are those of the truncated distribution, not the unbounded
+#' one. A [Fixed()] (point-mass) distribution has every quantile equal to its
+#' value.
+#'
+#' Only a distribution with fixed parameters can have its quantiles computed.
+#' If any parameter is itself a distribution (a prior), there is no single
+#' distribution to compute quantiles of and an error is raised; resolve it
+#' first with [fix_parameters()].
+#'
+#' A composite (multi-component) distribution returns one set of quantiles per
+#' component, in keeping with [mean()]/[sd()], which also return one value per
+#' component. A `max`/`cdf_max` bound set on the composite itself (with
+#' [bound_dist()] on the sum) refers to that combined distribution, which has
+#' no closed-form quantile function, so this raises an error. Bound the
+#' components individually to get their quantiles under a bound.
+#'
+#' @param x A `<dist_spec>` with fixed parameters.
+#' @param probs Numeric vector of probabilities in `[0, 1]`.
+#' @param ... Not used.
+#' @return For a single distribution, a numeric vector of quantiles the same
+#'   length as `probs`. For a composite distribution of `k` components, a
+#'   `length(probs)` by `k` matrix, one column per component.
+#' @seealso [cdf()] for the corresponding cumulative distribution function,
+#'   and [fix_parameters()] to resolve an uncertain distribution first.
+#' @importFrom cli cli_abort
+#' @method quantile dist_spec
+#' @export
+#' @examples
+#' # Quantiles of a fixed-parameter gamma distribution
+#' quantile(Gamma(shape = 2, rate = 1), c(0.05, 0.5, 0.95))
+#'
+#' # A `max` bound truncates the quantiles accordingly
+#' quantile(Gamma(shape = 2, rate = 1, max = 3), c(0.05, 0.5, 0.95))
+#'
+#' # A fixed (point-mass) distribution: every quantile equals its value
+#' quantile(Fixed(3), c(0.1, 0.9))
+quantile.dist_spec <- function(x, probs = seq(0, 1, 0.25), ...) {
+  validate_probs(probs)
+  if (has_uncertainty(x)) {
+    cli_abort(
+      c(
+        "!" = "Can only compute quantiles of a distribution with fixed
+        parameters.",
+        "i" = "Resolve the parameters first with {.fn fix_parameters}, then
+        compute quantiles."
+      )
+    )
+  }
+  if (get_distribution(x) == "fixed") {
+    return(rep(get_parameters(x)$value, length(probs)))
+  }
+  quantile_bounded(x, probs)
+}
+
+#' @rdname quantile.dist_spec
+#' @method quantile multi_dist_spec
+#' @importFrom stats quantile
+#' @export
+quantile.multi_dist_spec <- function(x, probs = seq(0, 1, 0.25), ...) {
+  check_no_composite_bound(x, "compute quantiles of")
+  vapply(x, quantile, probs = probs, FUN.VALUE = numeric(length(probs)))
+}
+
+#' Returns the cumulative distribution function of a delay distribution
+#'
+#' @description
+#' Evaluates the CDF of a `<dist_spec>` with fixed (non-uncertain) parameters
+#' at the given values, respecting any `max`/`cdf_max` bound set with
+#' [bound_dist()]: this is the CDF of the truncated distribution, not the
+#' unbounded one, so it is `1` for any value at or beyond the bound. A
+#' [Fixed()] (point-mass) distribution has a step-function CDF: `0` below its
+#' value and `1` at or above it.
+#'
+#' Only a distribution with fixed parameters can have its CDF evaluated. If
+#' any parameter is itself a distribution (a prior), there is no single
+#' distribution to evaluate and an error is raised; resolve it first with
+#' [fix_parameters()].
+#'
+#' A composite (multi-component) distribution returns one set of values per
+#' component, in keeping with [mean()]/[sd()]/[quantile.dist_spec()]. A
+#' `max`/`cdf_max` bound set on the composite itself (with [bound_dist()] on
+#' the sum) refers to that combined distribution, which has no closed-form
+#' CDF, so this raises an error. Bound the components individually to
+#' evaluate their CDF under a bound.
+#'
+#' @param x A `<dist_spec>` with fixed parameters.
+#' @param q Numeric vector of values to evaluate the CDF at.
+#' @param ... Not used.
+#' @return For a single distribution, a numeric vector the same length as
+#'   `q`. For a composite distribution of `k` components, a `length(q)` by
+#'   `k` matrix, one column per component.
+#' @seealso [quantile.dist_spec()] for the corresponding quantile function,
+#'   and [fix_parameters()] to resolve an uncertain distribution first.
+#' @export
+#' @examples
+#' # The CDF of a fixed-parameter gamma distribution
+#' cdf(Gamma(shape = 2, rate = 1), c(1, 2, 3))
+#'
+#' # A `max` bound truncates the CDF accordingly: it reaches 1 at the bound
+#' cdf(Gamma(shape = 2, rate = 1, max = 3), c(1, 2, 3))
+#'
+#' # A fixed (point-mass) distribution has a step-function CDF
+#' cdf(Fixed(3), c(2, 3, 4))
+cdf <- function(x, ...) {
+  UseMethod("cdf")
+}
+
+#' @rdname cdf
+#' @importFrom cli cli_abort
+#' @method cdf dist_spec
+#' @export
+cdf.dist_spec <- function(x, q, ...) {
+  if (!is.numeric(q)) {
+    cli_abort("{.arg q} must be numeric.")
+  }
+  if (has_uncertainty(x)) {
+    cli_abort(
+      c(
+        "!" = "Can only compute the CDF of a distribution with fixed
+        parameters.",
+        "i" = "Resolve the parameters first with {.fn fix_parameters}, then
+        compute the CDF."
+      )
+    )
+  }
+  if (get_distribution(x) == "fixed") {
+    return(as.numeric(q >= get_parameters(x)$value))
+  }
+  cdf_bounded(x, q)
+}
+
+#' @rdname cdf
+#' @method cdf multi_dist_spec
+#' @export
+cdf.multi_dist_spec <- function(x, q, ...) {
+  check_no_composite_bound(x, "compute the CDF of")
+  vapply(x, cdf, q = q, FUN.VALUE = numeric(length(q)))
 }
 
 #' Returns the maximum of one or more delay distribution

@@ -35,6 +35,9 @@ lower_bounds.weibull <- function(x) {
 #' @exportS3Method
 dist_cdf.weibull <- function(x) pweibull
 
+#' @exportS3Method
+dist_quantile.weibull <- function(x) qweibull
+
 #' @importFrom stats uniroot
 #' @exportS3Method
 to_natural.weibull <- function(x, ux) {
@@ -64,8 +67,8 @@ sd.weibull <- function(x, ...) {
   scale * sqrt(gamma(1 + 2 / shape) - gamma(1 + 1 / shape)^2)
 }
 
-#' @importFrom stats rweibull
+#' @importFrom stats rweibull qweibull
 #' @exportS3Method
 sample_dist.weibull <- function(x, n, ...) {
-  rweibull(n, shape = x$parameters$shape, scale = x$parameters$scale)
+  sample_bounded(x, n, rng = rweibull, cdf = pweibull, quantile = qweibull)
 }

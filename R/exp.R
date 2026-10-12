@@ -41,6 +41,9 @@ lower_bounds.exp <- function(x) {
 dist_cdf.exp <- function(x) pexp
 
 #' @exportS3Method
+dist_quantile.exp <- function(x) qexp
+
+#' @exportS3Method
 to_natural.exp <- function(x, ux) {
   list(rate = if ("mean" %in% names(ux)) 1 / ux$mean else ux$rate)
 }
@@ -53,8 +56,8 @@ mean.exp <- function(x, ...) 1 / x$parameters$rate
 #' @export
 sd.exp <- function(x, ...) 1 / x$parameters$rate
 
-#' @importFrom stats rexp
+#' @importFrom stats rexp qexp
 #' @exportS3Method
 sample_dist.exp <- function(x, n, ...) {
-  rexp(n, rate = x$parameters$rate)
+  sample_bounded(x, n, rng = rexp, cdf = pexp, quantile = qexp)
 }

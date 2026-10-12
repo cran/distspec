@@ -37,6 +37,9 @@ lower_bounds.lognormal <- function(x) {
 dist_cdf.lognormal <- function(x) plnorm
 
 #' @exportS3Method
+dist_quantile.lognormal <- function(x) qlnorm
+
+#' @exportS3Method
 to_natural.lognormal <- function(x, ux) {
   if (all(c("mean", "sd") %in% names(ux))) {
     list(
@@ -61,8 +64,8 @@ sd.lognormal <- function(x, ...) {
     exp(x$parameters$meanlog + 0.5 * x$parameters$sdlog^2)
 }
 
-#' @importFrom stats rlnorm
+#' @importFrom stats rlnorm qlnorm
 #' @exportS3Method
 sample_dist.lognormal <- function(x, n, ...) {
-  rlnorm(n, meanlog = x$parameters$meanlog, sdlog = x$parameters$sdlog)
+  sample_bounded(x, n, rng = rlnorm, cdf = plnorm, quantile = qlnorm)
 }
